@@ -22,6 +22,7 @@ function createWindow() {
         preload: path.join(__dirname, 'preload.js'),
         nodeIntegration: false,
         contextIsolation: true,
+        partition: 'persist:luxvm_storage', // Guarantees persistent localStorage across app restarts
       },
     })
 
