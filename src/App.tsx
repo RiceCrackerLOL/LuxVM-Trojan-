@@ -14,9 +14,11 @@ interface ChatSession {
   updatedAt: number
 }
 
-const SESSIONS_KEY = 'luxvm_sessions_v2'
-const ACTIVE_SESSION_KEY = 'luxvm_active_id_v2'
-const SETTINGS_KEY = 'luxvm_settings_v1'
+type ProviderType = 'auto' | 'openai' | 'openrouter' | 'xai' | 'custom'
+
+const SESSIONS_KEY = 'luxvm_sessions_v3'
+const ACTIVE_SESSION_KEY = 'luxvm_active_id_v3'
+const SETTINGS_KEY = 'luxvm_settings_v3'
 
 function safeGetStorage<T>(key: string, fallback: T): T {
   try {
@@ -48,7 +50,7 @@ export default function App() {
           {
             id: 'welcome-1',
             role: 'assistant',
-            content: 'Welcome to LuxVM Desktop. Configure your API endpoint in Settings or start messaging below.',
+            content: 'Welcome to LuxVM Desktop. Paste your API key in Settings—endpoints and models will configure automatically!',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           },
         ],
@@ -67,19 +69,19 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
 
-  const [apiEndpoint, setApiEndpoint] = useState(() =>
-    safeGetStorage(SETTINGS_KEY, { apiEndpoint: 'https://api.openai.com/v1/chat/completions' }).apiEndpoint ||
-    'https://api.openai.com/v1/chat/completions'
-  )
-  const [apiKey, setApiKey] = useState(() =>
-    safeGetStorage(SETTINGS_KEY, { apiKey: '' }).apiKey || ''
-  )
-  const [modelName, setModelName] = useState(() =>
-    safeGetStorage(SETTINGS_KEY, { modelName: 'gpt-4o-mini' }).modelName || 'gpt-4o-mini'
-  )
+  const initialSettings = safeGetStorage(SETTINGS_KEY, {
+    provider: 'auto' as ProviderType,
+    apiKey: '',
+    apiEndpoint: 'https://api.openai.com/v1/chat/completions',
+    modelName: 'gpt-4o-mini',
+  })
+
+  const [provider, setProvider] = useState<ProviderType>(initialSettings.provider || 'auto')
+  const [apiKey, setApiKey] = useState(initialSettings.apiKey || '')
+  const [apiEndpoint, setApiEndpoint] = useState(initialSettings.apiEndpoint || 'https://api.openai.com/v1/chat/completions')
+  const [modelName, setModelName] = useState(initialSettings.modelName || 'gpt-4o-mini')
 
   const bottomRef = useRef<HTMLDivElement | null>(null)
-
   const currentSession = sessions.find((s) => s.id === activeSessionId) || sessions[0]
 
   useEffect(() => {
@@ -94,11 +96,44 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [currentSession?.messages, isLoading])
 
+  // Smart Auto-detection based on API key prefix if provider is 'auto'
+  const handleApiKeyChange = (newKey: string) => {
+    setApiKey(newKey)
+    if (provider === 'auto') {
+      const trimmed = newKey.trim()
+      if (trimmed.startsWith('sk-or-')) {
+        setApiEndpoint('https://openrouter.ai/api/v1/chat/completions')
+        setModelName('openai/gpt-4o-mini')
+      } else if (trimmed.startsWith('grok_')) {
+        setApiEndpoint('https://api.x.ai/v1/chat/completions')
+        setModelName('grok-beta')
+      } else if (trimmed.startsWith('sk-')) {
+        setApiEndpoint('https://api.openai.com/v1/chat/completions')
+        setModelName('gpt-4o-mini')
+      }
+    }
+  }
+
+  const handleProviderChange = (newProvider: ProviderType) => {
+    setProvider(newProvider)
+    if (newProvider === 'openai') {
+      setApiEndpoint('https://api.openai.com/v1/chat/completions')
+      setModelName('gpt-4o-mini')
+    } else if (newProvider === 'openrouter') {
+      setApiEndpoint('https://openrouter.ai/api/v1/chat/completions')
+      setModelName('openai/gpt-4o-mini')
+    } else if (newProvider === 'xai') {
+      setApiEndpoint('https://api.x.ai/v1/chat/completions')
+      setModelName('grok-beta')
+    }
+  }
+
   const saveSettings = () => {
     safeSetStorage(SETTINGS_KEY, {
-      apiEndpoint: apiEndpoint.trim() || 'https://api.openai.com/v1/chat/completions',
+      provider,
       apiKey: apiKey.trim(),
-      modelName: modelName.trim() || 'gpt-4o-mini',
+      apiEndpoint: apiEndpoint.trim(),
+      modelName: modelName.trim(),
     })
     setShowSettings(false)
   }
@@ -168,7 +203,7 @@ export default function App() {
         const assistantMsg: Message = {
           id: String(Date.now() + 1),
           role: 'assistant',
-          content: `[Offline Echo Mode] You said: "${trimmed}"\n\nOpen ⚙️ Settings in the top-right corner to enter an OpenAI-compatible endpoint and API key.`,
+          content: `[Offline Echo Mode] You said: "${trimmed}"\n\nOpen ⚙️ Settings to enter your API key.`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         }
         setSessions((prev) =>
@@ -185,12 +220,20 @@ export default function App() {
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({ role: m.role, content: m.content }))
 
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey.trim()}`,
+      }
+
+      // Add OpenRouter specific optional rankings headers if applicable
+      if (provider === 'openrouter' || apiEndpoint.includes('openrouter.ai')) {
+        headers['HTTP-Referer'] = 'https://luxvm.desktop'
+        headers['X-Title'] = 'LuxVM Desktop'
+      }
+
       const response = await fetch(apiEndpoint.trim(), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey.trim()}`,
-        },
+        headers,
         body: JSON.stringify({
           model: modelName.trim(),
           messages: outboundMessages,
@@ -290,7 +333,7 @@ export default function App() {
           <div style={styles.brand}>
             <span style={styles.dot} />
             <strong>LuxVM</strong>
-            <span style={styles.badge}>Desktop v1.1</span>
+            <span style={styles.badge}>Desktop v1.2</span>
           </div>
           <div style={styles.actions}>
             <button
@@ -305,35 +348,56 @@ export default function App() {
 
         {showSettings && (
           <div style={styles.settingsPanel}>
-            <h3 style={{ margin: '0 0 12px 0', fontSize: '15px' }}>AI Provider Configuration</h3>
+            <h3 style={{ margin: '0 0 12px 0', fontSize: '15px' }}>AI Provider & Key Configuration</h3>
+            
             <div style={styles.fieldRow}>
-              <label style={styles.label}>API Endpoint URL</label>
+              <label style={styles.label}>Provider Selection</label>
+              <select
+                style={styles.select}
+                value={provider}
+                onChange={(e) => handleProviderChange(e.target.value as ProviderType)}
+              >
+                <option value="auto">Auto-Detect from API Key (Recommended)</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="openai">OpenAI</option>
+                <option value="xai">xAI (Grok)</option>
+                <option value="custom">Custom URL</option>
+              </select>
+            </div>
+
+            <div style={styles.fieldRow}>
+              <label style={styles.label}>API Key (Just paste your key here)</label>
               <input
                 style={styles.input}
-                value={apiEndpoint}
-                onChange={(e) => setApiEndpoint(e.target.value)}
-                placeholder="https://api.openai.com/v1/chat/completions"
+                type="password"
+                value={apiKey}
+                onChange={(e) => handleApiKeyChange(e.target.value)}
+                placeholder="sk-or-... or grok_... or sk-..."
               />
             </div>
+
+            {(provider === 'custom' || provider !== 'auto') && (
+              <div style={styles.fieldRow}>
+                <label style={styles.label}>API Endpoint URL (Auto-filled)</label>
+                <input
+                  style={styles.input}
+                  value={apiEndpoint}
+                  onChange={(e) => setApiEndpoint(e.target.value)}
+                  placeholder="https://..."
+                />
+              </div>
+            )}
+
             <div style={styles.fieldRow}>
               <label style={styles.label}>Model Name</label>
               <input
                 style={styles.input}
                 value={modelName}
                 onChange={(e) => setModelName(e.target.value)}
-                placeholder="gpt-4o-mini"
+                placeholder="openai/gpt-4o-mini or grok-beta"
               />
             </div>
-            <div style={styles.fieldRow}>
-              <label style={styles.label}>API Key (Stored Locally)</label>
-              <input
-                style={styles.input}
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-..."
-              />
-            </div>
+
             <button type="button" onClick={saveSettings} style={styles.primaryBtn}>
               Save Configuration
             </button>
@@ -529,6 +593,16 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: '4px',
   },
   input: {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '8px 10px',
+    borderRadius: '6px',
+    border: '1px solid #475569',
+    backgroundColor: '#0f172a',
+    color: '#f8fafc',
+    fontSize: '13px',
+  },
+  select: {
     width: '100%',
     boxSizing: 'border-box',
     padding: '8px 10px',
