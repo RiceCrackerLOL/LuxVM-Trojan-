@@ -14,9 +14,9 @@ interface ChatSession {
   updatedAt: number
 }
 
-const SESSIONS_KEY = 'luxvm_sessions_v6'
-const ACTIVE_SESSION_KEY = 'luxvm_active_id_v6'
-const SETTINGS_KEY = 'luxvm_settings_v6'
+const SESSIONS_KEY = 'luxvm_sessions_v7'
+const ACTIVE_SESSION_KEY = 'luxvm_active_id_v7'
+const SETTINGS_KEY = 'luxvm_settings_v7'
 
 function safeGetStorage<T>(key: string, fallback: T): T {
   try {
@@ -48,7 +48,7 @@ export default function App() {
           {
             id: 'welcome-1',
             role: 'assistant',
-            content: 'Welcome to LuxVM Desktop. Just paste your API key in Settings—everything else configures automatically!',
+            content: 'Welcome to LuxVM Desktop. Just paste your API key in Settings—everything configures automatically!',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           },
         ],
@@ -92,13 +92,13 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [currentSession?.messages, isLoading])
 
-  // Automatically maps key prefixes to the correct endpoint and standard default model
+  // Automatically maps key prefixes to the correct endpoint and active model
   const resolveConfigByKey = (key: string) => {
     const trimmed = key.trim()
     if (trimmed.startsWith('gsk_')) {
       return {
         endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-        model: 'llama-3.1-8b-instant',
+        model: 'openai/gpt-oss-20b',
       }
     } else if (trimmed.startsWith('sk-or-')) {
       return {
@@ -206,7 +206,6 @@ export default function App() {
         return
       }
 
-      // Automatically resolve endpoint and model entirely from the API key
       const config = resolveConfigByKey(apiKey)
 
       const outboundMessages = [
