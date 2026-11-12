@@ -14,9 +14,11 @@ interface ChatSession {
   updatedAt: number
 }
 
-const SESSIONS_KEY = 'luxvm_sessions_v7'
-const ACTIVE_SESSION_KEY = 'luxvm_active_id_v7'
-const SETTINGS_KEY = 'luxvm_settings_v7'
+type ProviderType = 'auto' | 'openrouter' | 'groq' | 'openai'
+
+const SESSIONS_KEY = 'luxvm_sessions_v9'
+const ACTIVE_SESSION_KEY = 'luxvm_active_id_v9'
+const SETTINGS_KEY = 'luxvm_settings_v9'
 
 function safeGetStorage<T>(key: string, fallback: T): T {
   try {
@@ -48,7 +50,7 @@ export default function App() {
           {
             id: 'welcome-1',
             role: 'assistant',
-            content: 'Welcome to LuxVM Desktop. Just paste your API key in Settings—everything configures automatically!',
+            content: 'Welcome to LuxVM Desktop. Configure your API key, model name, and personality settings below.',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           },
         ],
@@ -68,11 +70,15 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
 
   const initialSettings = safeGetStorage(SETTINGS_KEY, {
+    provider: 'auto' as ProviderType,
     apiKey: '',
+    modelName: 'openai/gpt-4o-mini',
     systemPrompt: 'You are LuxVM, a helpful, precise, and direct AI desktop assistant.',
   })
 
+  const [provider, setProvider] = useState<ProviderType>(initialSettings.provider || 'auto')
   const [apiKey, setApiKey] = useState(initialSettings.apiKey || '')
+  const [modelName, setModelName] = useState(initialSettings.modelName || 'openai/gpt-4o-mini')
   const [systemPrompt, setSystemPrompt] = useState(
     initialSettings.systemPrompt || 'You are LuxVM, a helpful, precise, and direct AI desktop assistant.'
   )
@@ -92,35 +98,51 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [currentSession?.messages, isLoading])
 
-  // Automatically maps key prefixes to the correct endpoint and active model
-  const resolveConfigByKey = (key: string) => {
-    const trimmed = key.trim()
-    if (trimmed.startsWith('gsk_')) {
-      return {
-        endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-        model: 'openai/gpt-oss-20b',
-      }
-    } else if (trimmed.startsWith('sk-or-')) {
+  // Save settings persistently
+  useEffect(() => {
+    safeSetStorage(SETTINGS_KEY, {
+      provider,
+      apiKey: apiKey.trim(),
+      modelName: modelName.trim() || 'openai/gpt-4o-mini',
+      systemPrompt: systemPrompt.trim(),
+    })
+  }, [provider, apiKey, modelName, systemPrompt])
+
+  // Resolve endpoint and default model suggestions based on prefix or manual selection
+  const resolveTargetConfig = () => {
+    const trimmedKey = apiKey.trim()
+
+    if (provider === 'openrouter' || (provider === 'auto' && trimmedKey.startsWith('sk-or-'))) {
       return {
         endpoint: 'https://openrouter.ai/api/v1/chat/completions',
-        model: 'openai/gpt-4o-mini',
+        defaultModel: 'openai/gpt-4o-mini',
       }
-    } else if (trimmed.startsWith('xai-') || trimmed.startsWith('grok_')) {
+    } else if (provider === 'groq' || (provider === 'auto' && trimmedKey.startsWith('gsk_'))) {
       return {
-        endpoint: 'https://api.x.ai/v1/chat/completions',
-        model: 'grok-2-latest',
+        endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+        defaultModel: 'llama-3.3-70b-versatile',
       }
     } else {
       return {
         endpoint: 'https://api.openai.com/v1/chat/completions',
-        model: 'gpt-4o-mini',
+        defaultModel: 'gpt-4o-mini',
       }
+    }
+  }
+
+  const handleApiKeyChange = (newKey: string) => {
+    setApiKey(newKey)
+    const resolved = resolveTargetConfig()
+    if (!modelName || modelName === 'openai/gpt-4o-mini' || modelName === 'llama-3.3-70b-versatile' || modelName === 'gpt-4o-mini') {
+      setModelName(resolved.defaultModel)
     }
   }
 
   const saveSettings = () => {
     safeSetStorage(SETTINGS_KEY, {
+      provider,
       apiKey: apiKey.trim(),
+      modelName: modelName.trim() || 'openai/gpt-4o-mini',
       systemPrompt: systemPrompt.trim(),
     })
     setShowSettings(false)
@@ -134,7 +156,7 @@ export default function App() {
         {
           id: 'welcome-new',
           role: 'assistant',
-          content: 'Started a new session using your API key and behavior memory.',
+          content: 'Started a new session with your persistent configuration.',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ],
@@ -193,7 +215,7 @@ export default function App() {
         const assistantMsg: Message = {
           id: String(Date.now() + 1),
           role: 'assistant',
-          content: `[Offline Echo Mode] You said: "${trimmed}"\n\nOpen ⚙️ Settings to paste your API key.`,
+          content: `[Offline Echo Mode] You said: "${trimmed}"\n\nOpen ⚙️ Settings to enter your API key.`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         }
         setSessions((prev) =>
@@ -206,8 +228,10 @@ export default function App() {
         return
       }
 
-      const config = resolveConfigByKey(apiKey)
+      const config = resolveTargetConfig()
+      const activeModel = modelName.trim() || config.defaultModel
 
+      // Properly structure messages with the persistent system prompt personality
       const outboundMessages = [
         ...(systemPrompt.trim()
           ? [{ role: 'system' as const, content: systemPrompt.trim() }]
@@ -222,7 +246,7 @@ export default function App() {
         Authorization: `Bearer ${apiKey.trim()}`,
       }
 
-      if (apiKey.trim().startsWith('sk-or-')) {
+      if (apiKey.trim().startsWith('sk-or-') || provider === 'openrouter') {
         headers['HTTP-Referer'] = 'https://luxvm.desktop'
         headers['X-Title'] = 'LuxVM Desktop'
       }
@@ -231,7 +255,7 @@ export default function App() {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          model: config.model,
+          model: activeModel,
           messages: outboundMessages,
         }),
         signal: controller.signal,
@@ -329,7 +353,7 @@ export default function App() {
           <div style={styles.brand}>
             <span style={styles.dot} />
             <strong>LuxVM</strong>
-            <span style={styles.badge}>Pure API Key Mode</span>
+            <span style={styles.badge}>Desktop v1.4</span>
           </div>
           <div style={styles.actions}>
             <button
@@ -345,27 +369,51 @@ export default function App() {
         {showSettings && (
           <div style={styles.settingsPanel}>
             <h3 style={{ margin: '0 0 12px 0', fontSize: '15px' }}>
-              API Key & Behavior Memory
+              API Provider & Personality Settings
             </h3>
 
             <div style={styles.fieldRow}>
-              <label style={styles.label}>API Key (Just paste it here — no models or URLs needed)</label>
+              <label style={styles.label}>AI Provider Selection</label>
+              <select
+                style={styles.select}
+                value={provider}
+                onChange={(e) => setProvider(e.target.value as ProviderType)}
+              >
+                <option value="auto">Auto-Detect from API Key</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="groq">Groq</option>
+                <option value="openai">OpenAI</option>
+              </select>
+            </div>
+
+            <div style={styles.fieldRow}>
+              <label style={styles.label}>API Key (Stored in persistent memory)</label>
               <input
                 style={styles.input}
                 type="password"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Paste any key (gsk_..., sk-or-..., xai-..., sk-...)"
+                onChange={(e) => handleApiKeyChange(e.target.value)}
+                placeholder="Paste key (sk-or-..., gsk_..., sk-...)"
               />
             </div>
 
             <div style={styles.fieldRow}>
-              <label style={styles.label}>Permanent Behavior Memory (Applies globally)</label>
+              <label style={styles.label}>Model Name</label>
+              <input
+                style={styles.input}
+                value={modelName}
+                onChange={(e) => setModelName(e.target.value)}
+                placeholder="openai/gpt-4o-mini or anthropic/claude-3.5-sonnet"
+              />
+            </div>
+
+            <div style={styles.fieldRow}>
+              <label style={styles.label}>Permanent Personality / System Prompt</label>
               <textarea
                 style={{ ...styles.input, height: '72px', resize: 'vertical', fontFamily: 'inherit' }}
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="Tell LuxVM how to act across all chats..."
+                placeholder="Define how LuxVM should behave across all chats..."
               />
             </div>
 
@@ -564,6 +612,16 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: '4px',
   },
   input: {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '8px 10px',
+    borderRadius: '6px',
+    border: '1px solid #475569',
+    backgroundColor: '#0f172a',
+    color: '#f8fafc',
+    fontSize: '13px',
+  },
+  select: {
     width: '100%',
     boxSizing: 'border-box',
     padding: '8px 10px',
